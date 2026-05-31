@@ -72,12 +72,17 @@ def parse_issue_payload(payload: dict[str, object]) -> tuple[str, GitHubIssue | 
     return action, issue
 
 
+def has_trigger_label(issue: GitHubIssue, trigger_labels: set[str]) -> bool:
+    """Whether an issue carries at least one configured trigger label."""
+    issue_labels = {label.lower() for label in issue.labels}
+    return bool(issue_labels & trigger_labels)
+
+
 def is_eligible(action: str, issue: GitHubIssue, trigger_labels: set[str]) -> bool:
     """Whether a newly opened issue should trigger a remediation session."""
     if action != "opened":
         return False
-    issue_labels = {label.lower() for label in issue.labels}
-    return bool(issue_labels & trigger_labels)
+    return has_trigger_label(issue, trigger_labels)
 
 
 def build_prompt(issue: GitHubIssue) -> str:

@@ -35,15 +35,27 @@ class Settings(BaseSettings):
     devin_org_id: str = ""
     devin_api_base: str = "https://api.devin.ai/v3"
 
-    # --- GitHub webhook ---
+    # --- GitHub ---
     github_webhook_secret: str = ""
+    # Repository the standalone monitor polls for eligible issues.
+    github_repo: str = "royendo/superset-devin"
+    # Personal access token used to read issues (and lift the rate limit).
+    # Optional for public repositories.
+    github_token: str = ""
+    github_api_base: str = "https://api.github.com"
 
     # --- Storage ---
     database_path: str = "data/orchestrator.db"
 
     # --- Behaviour ---
     simulation_mode: bool = False
+    # How often the session-reconciliation worker refreshes active sessions.
     poll_interval_seconds: float = 15.0
+    # Whether the standalone monitor scans the repository for issues. Disable to
+    # run in pure webhook mode (or to keep tests deterministic).
+    issue_polling_enabled: bool = True
+    # How often the monitor scans the repository for new eligible issues.
+    issue_poll_interval_seconds: float = 30.0
     trigger_labels: str = "devin-remediate,security,dependency,code-quality"
 
     # --- Simulation tuning (ignored unless simulation_mode is on) ---

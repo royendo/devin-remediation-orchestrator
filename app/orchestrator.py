@@ -24,13 +24,14 @@ ones to Devin, persists task state and reconciles session status.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app import github
 from app.config import Settings
 from app.db import TaskStore, utcnow
 from app.devin_client import DevinClientProtocol
+from app.issues import IssueSourceProtocol
 from app.models import (
     DEVIN_TERMINAL_FAIL,
     DEVIN_TERMINAL_OK,
@@ -52,6 +53,18 @@ class IssueOutcome:
     task: Task | None = None
 
 
+@dataclass
+class ScanResult:
+    """Summary of a single repository scan for eligible issues."""
+
+    scanned: int = 0
+    eligible: int = 0
+    triggered: int = 0
+    duplicate: int = 0
+    errors: int = 0
+    triggered_tasks: list[Task] = field(default_factory=list)
+
+
 class Orchestrator:
     """Glue between GitHub issue events, the task store and Devin."""
 
@@ -70,13 +83,48 @@ class Orchestrator:
         return self._store
 
     async def process_issue(self, action: str, issue: GitHubIssue) -> IssueOutcome:
-        """Classify an issue and, if eligible, start a Devin session."""
+        """Classify a webhook issue event and, if eligible, start a session."""
         if not github.is_eligible(action, issue, self._settings.trigger_label_set):
             return IssueOutcome(
                 "ignored",
                 f"action={action!r} labels={issue.labels} did not match triggers",
             )
+        return await self._trigger(issue)
 
+    async def scan_open_issues(self, source: IssueSourceProtocol) -> ScanResult:
+        """Pull open issues from ``source`` and start sessions for new ones.
+
+        This is the heart of the standalone monitor: it is safe to call on a
+        timer or on demand, and dedupes against already-tracked issues so the
+        same issue never spawns two sessions.
+        """
+        issues = await source.list_open_issues()
+        result = ScanResult(scanned=len(issues))
+        triggers = self._settings.trigger_label_set
+        for issue in issues:
+            if not github.has_trigger_label(issue, triggers):
+                continue
+            result.eligible += 1
+            outcome = await self._trigger(issue)
+            if outcome.result == "triggered":
+                result.triggered += 1
+                if outcome.task is not None:
+                    result.triggered_tasks.append(outcome.task)
+            elif outcome.result == "duplicate":
+                result.duplicate += 1
+            elif outcome.result == "error":
+                result.errors += 1
+        if result.triggered:
+            logger.info(
+                "Scan started %s session(s) (%s eligible, %s already tracked)",
+                result.triggered,
+                result.eligible,
+                result.duplicate,
+            )
+        return result
+
+    async def _trigger(self, issue: GitHubIssue) -> IssueOutcome:
+        """Dedupe, persist and start a Devin session for ``issue``."""
         existing = self._store.get_by_issue(issue.repo_full_name, issue.number)
         if existing is not None:
             return IssueOutcome(
