@@ -1,0 +1,52 @@
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -r requirements.txt pytest ruff mypy
+      - name: Lint (ruff)
+        run: ruff check app tests scripts
+      - name: Type-check (mypy)
+        run: mypy app
+      - name: Tests (pytest)
+        run: python -m pytest tests/ -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t devin-remediation-orchestrator .
+      - name: Smoke test (simulation mode)
+        run: |
+          docker run -d --name orch -p 8000:8000 -e SIMULATION_MODE=true \
+            devin-remediation-orchestrator
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:8000/health; then ok=1; break; fi
+            sleep 1
+          done
+          test "${ok:-0}" = "1"
+          docker rm -f orch
