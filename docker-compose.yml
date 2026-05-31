@@ -25,11 +25,13 @@ services:
       SIMULATION_MODE: "true"
       DATABASE_PATH: "/app/data/orchestrator.db"
       POLL_INTERVAL_SECONDS: "5"
+      ISSUE_POLL_INTERVAL_SECONDS: "15"
       SIM_SESSION_DURATION_SECONDS: "15"
       # For LIVE mode, set these (and SIMULATION_MODE=false):
       # DEVIN_API_KEY: "cog_..."
       # DEVIN_ORG_ID: "your_org_id"
-      # GITHUB_WEBHOOK_SECRET: "your_webhook_secret"
+      # GITHUB_REPO: "royendo/superset-devin"
+      # GITHUB_TOKEN: "github_pat_..."   # Issues: Read-only
     env_file:
       - path: .env
         required: false

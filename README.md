@@ -29,27 +29,45 @@ remediation sessions, tracks their progress, and reports observable outcomes.
 
 ## How it works
 
+This is a **self-standing monitor**: it polls the GitHub API for the target
+repository on a fixed interval, finds open issues carrying a trigger label, and
+starts a Devin session for each new one. No public URL or webhook configuration
+is required — just run the server.
+
 ```
-GitHub issue (opened, labeled)
-        │  POST /webhooks/github
-        ▼
-┌─────────────────────────────┐
-│  FastAPI orchestrator        │
-│  1. verify signature         │
-│  2. filter by label          │
-│  3. dedupe by repo+issue     │
-│  4. create Devin session ────┼──►  POST /v3/organizations/{org}/sessions
-│  5. persist task (SQLite)    │
-└─────────────────────────────┘
-        ▲
-        │  background polling worker
+                 ┌──────── every ISSUE_POLL_INTERVAL_SECONDS ────────┐
+                 │            (or POST /poll/run, or press 's')        │
+                 ▼                                                     │
+   GET /repos/{repo}/issues?state=open ──►  open issues               │
+        │                                                             │
+        ▼                                                             │
+┌─────────────────────────────┐                                      │
+│  FastAPI orchestrator        │                                      │
+│  1. filter by trigger label  │                                      │
+│  2. dedupe by repo+issue     │                                      │
+│  3. create Devin session ────┼──►  POST /v3/organizations/{org}/sessions
+│  4. persist task (SQLite)    │                                      │
+└─────────────────────────────┘                                      │
+        ▲                                                             │
+        │  session-reconciliation worker ─────────────────────────────┘
         │  GET /v3/organizations/{org}/sessions/{id}
         ▼
    status + PR URL  ──►  /dashboard (HTML)  +  /metrics (JSON)
 ```
 
-A task is started only for **newly opened** issues carrying one of the trigger
-labels (default `devin-remediate`, `security`, `dependency`, `code-quality`).
+A task is started for any **open** issue carrying one of the trigger labels
+(default `devin-remediate`, `security`, `dependency`, `code-quality`). Issues are
+deduped by `repo + issue number`, so repeated scans never start a second session
+for the same issue.
+
+### Triggering a scan manually
+
+Besides the interval, you can force an immediate scan two ways:
+
+- **HTTP:** `curl -X POST http://localhost:8000/poll/run` — returns a JSON
+  summary (`scanned`, `eligible`, `triggered`, `duplicate`, `errors`).
+- **Keyboard:** when the server runs attached to a terminal, press **`s`** to
+  scan now (Ctrl-C to quit). Disabled automatically when stdin is not a TTY.
 
 ![Dashboard](docs/dashboard.png)
 
@@ -66,11 +84,11 @@ service.
 
 | Method | Path                | Description                                       |
 | ------ | ------------------- | ------------------------------------------------- |
-| POST   | `/webhooks/github`  | GitHub `issues` webhook receiver (HMAC verified)  |
+| POST   | `/poll/run`         | Manually trigger an immediate repository scan      |
 | POST   | `/simulate/issue`   | Inject a synthetic issue (simulation mode only)   |
 | GET    | `/metrics`          | JSON metrics                                      |
 | GET    | `/dashboard`        | HTML dashboard (auto-refreshing)                  |
-| GET    | `/health`           | Liveness + current mode                           |
+| GET    | `/health`           | Liveness + mode + monitored repo                  |
 
 ## Task state (SQLite)
 
@@ -87,9 +105,13 @@ failure.
 | `DEVIN_API_KEY`                | —                                | Service-user key (`cog_...`); required for LIVE   |
 | `DEVIN_ORG_ID`                 | —                                | Organization ID; required for LIVE               |
 | `DEVIN_API_BASE`               | `https://api.devin.ai/v3`        | Devin API base URL                               |
-| `GITHUB_WEBHOOK_SECRET`        | —                                | If empty, signature checks are skipped (dev only) |
+| `GITHUB_REPO`                  | `royendo/superset-devin`         | Repository the monitor polls for issues          |
+| `GITHUB_TOKEN`                 | —                                | PAT to read issues (Issues: Read-only); optional for public repos |
+| `GITHUB_API_BASE`              | `https://api.github.com`         | GitHub REST API base URL                         |
 | `DATABASE_PATH`                | `data/orchestrator.db`           | SQLite file path                                 |
 | `POLL_INTERVAL_SECONDS`        | `15`                             | Session reconciliation interval                  |
+| `ISSUE_POLLING_ENABLED`        | `true`                           | Set `false` to scan only on manual triggers      |
+| `ISSUE_POLL_INTERVAL_SECONDS`  | `30`                             | How often the monitor scans the repo for issues  |
 | `TRIGGER_LABELS`               | `devin-remediate,security,dependency,code-quality` | Comma-separated      |
 | `SIM_SESSION_DURATION_SECONDS` | `20`                             | Simulated session runtime                        |
 | `SIM_FAILURE_RATE`             | `0.2`                            | Fraction of simulated sessions that fail         |
@@ -104,13 +126,17 @@ back to simulation mode.
 docker compose up --build
 ```
 
-This boots in simulation mode (no credentials needed). Then, from another shell:
+This boots in simulation mode (no credentials needed). The monitor immediately
+"discovers" a built-in set of synthetic issues and starts simulated sessions for
+them, so the dashboard fills up on its own. You can also drive it explicitly from
+another shell:
 
 ```bash
-# fire 5 synthetic issues and watch them settle
+# force an immediate scan
+curl -X POST http://localhost:8000/poll/run
+# or run the demo driver, which injects issues and waits for them to settle
 docker compose exec orchestrator python scripts/demo.py
-# or run the driver from the host:
-python scripts/demo.py --base-url http://localhost:8000
+python scripts/demo.py --base-url http://localhost:8000   # from the host
 ```
 
 Open the dashboard at <http://localhost:8000/dashboard> and metrics at
@@ -128,49 +154,34 @@ make test             # runs the test suite
 
 ## Local simulation explained
 
-Simulation mode swaps the real Devin HTTP client for `SimulatedDevinClient`,
-which reports each session as `running` for `SIM_SESSION_DURATION_SECONDS` and
-then deterministically transitions to `finished` (with a fake PR URL) or `error`
-based on a hash of the session id. This exercises the **entire** pipeline —
-webhook parsing, label filtering, dedupe, persistence, the polling worker, the
-dashboard and metrics — without any GitHub or Devin credentials.
+Simulation mode swaps the real Devin HTTP client for `SimulatedDevinClient` and
+the real GitHub issue source for `SimulatedIssueSource`. The simulated client
+reports each session as `running` for `SIM_SESSION_DURATION_SECONDS` and then
+deterministically transitions to `finished` (with a fake PR URL) or `error`
+based on a hash of the session id; the simulated source returns a fixed set of
+eligible issues for the monitor to find. Together they exercise the **entire**
+pipeline — issue polling, label filtering, dedupe, persistence, the
+reconciliation worker, the dashboard and metrics — without any GitHub or Devin
+credentials.
 
 `POST /simulate/issue` generates a realistic eligible issue and routes it through
-the same `process_issue` path the webhook uses.
+the same trigger path the monitor uses.
 
 ## Going LIVE
 
 1. Create a Devin service user and key; note your org ID
    (Settings → Service Users). See the
    [Devin API docs](https://docs.devin.ai/api-reference/common-flows).
-2. Set `SIMULATION_MODE=false`, `DEVIN_API_KEY`, `DEVIN_ORG_ID`, and
-   `GITHUB_WEBHOOK_SECRET` (copy `.env.example` to `.env`).
-3. Deploy the service somewhere GitHub can reach.
+2. Copy `.env.example` to `.env` and set `SIMULATION_MODE=false`,
+   `DEVIN_API_KEY`, `DEVIN_ORG_ID`, `GITHUB_REPO`, and (recommended)
+   `GITHUB_TOKEN` — a fine-grained PAT scoped to the repo with
+   **Issues: Read-only** (optional for a public repo, but avoids the 60 req/hr
+   unauthenticated rate limit).
+3. Run the server. As a polling monitor it needs no inbound network access, so
+   it can run anywhere with outbound HTTPS to GitHub and the Devin API.
 
-## GitHub webhook setup
-
-In the target repository: **Settings → Webhooks → Add webhook**.
-
-- **Payload URL:** `https://<your-host>/webhooks/github`
-- **Content type:** `application/json`
-- **Secret:** the same value as `GITHUB_WEBHOOK_SECRET`
-- **Events:** *Let me select individual events* → check **Issues** only
-
-For local testing you can forward webhooks with a tunnel (e.g. `cloudflared`,
-`ngrok`) or replay a saved payload:
-
-```bash
-SECRET="your_secret"
-BODY='{"action":"opened","issue":{"number":42,"title":"Bump urllib3",
-  "body":"CVE fix","html_url":"https://github.com/o/r/issues/42",
-  "labels":[{"name":"security"}]},"repository":{"full_name":"o/r"}}'
-SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
-curl -X POST http://localhost:8000/webhooks/github \
-  -H "X-GitHub-Event: issues" \
-  -H "X-Hub-Signature-256: $SIG" \
-  -H "Content-Type: application/json" \
-  -d "$BODY"
-```
+> Devin opens the actual pull requests through your Devin ↔ GitHub integration;
+> `GITHUB_TOKEN` is only used by this service to *read* issues.
 
 ## Project layout
 
@@ -180,10 +191,13 @@ app/
   models.py        # pydantic models + status constants
   db.py            # SQLite task store
   devin_client.py  # real + simulated Devin clients
-  github.py        # signature verify, payload parse, prompt build
-  orchestrator.py  # core: classify -> start session -> reconcile -> metrics
-  poller.py        # background reconciliation worker
+  issues.py        # real + simulated GitHub issue sources (polling)
+  github.py        # label-based eligibility + Devin prompt build
+  orchestrator.py  # core: scan/classify -> start session -> reconcile -> metrics
+  poller.py        # IssuePoller (monitor) + PollingWorker (session reconcile)
+  keyboard.py      # 's' keyboard shortcut to trigger a scan
   dashboard.py     # HTML rendering
+  simulation.py    # synthetic issue generation for demos
   main.py          # FastAPI wiring
 scripts/demo.py    # end-to-end demo driver
 tests/             # unit + integration tests

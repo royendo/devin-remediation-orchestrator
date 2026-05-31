@@ -64,7 +64,8 @@ def make_issue() -> GitHubIssue:
     """Return the next synthetic eligible issue."""
     number = next(_counter)
     title, body, labels = _TEMPLATES[(number - 1) % len(_TEMPLATES)]
-    issue_number = 1000 + number
+    # 2000+ range keeps injected issues distinct from sample_issues() (1000+).
+    issue_number = 2000 + number
     return GitHubIssue(
         number=issue_number,
         title=title,
@@ -73,3 +74,24 @@ def make_issue() -> GitHubIssue:
         repo_full_name=_REPO,
         labels=labels,
     )
+
+
+def sample_issues(repo: str = _REPO) -> list[GitHubIssue]:
+    """Return a stable list of synthetic open issues for the monitor to find.
+
+    Issue numbers are deterministic so repeated scans dedupe correctly.
+    """
+    issues: list[GitHubIssue] = []
+    for index, (title, body, labels) in enumerate(_TEMPLATES, start=1):
+        issue_number = 1000 + index
+        issues.append(
+            GitHubIssue(
+                number=issue_number,
+                title=title,
+                body=body,
+                html_url=f"https://github.com/{repo}/issues/{issue_number}",
+                repo_full_name=repo,
+                labels=labels,
+            )
+        )
+    return issues

@@ -21,7 +21,8 @@ install:
 	python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt pytest
 
 run-sim:
-	SIMULATION_MODE=true POLL_INTERVAL_SECONDS=5 SIM_SESSION_DURATION_SECONDS=15 \
+	SIMULATION_MODE=true POLL_INTERVAL_SECONDS=5 ISSUE_POLL_INTERVAL_SECONDS=15 \
+		SIM_SESSION_DURATION_SECONDS=15 \
 		.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 run:
