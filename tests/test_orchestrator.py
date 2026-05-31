@@ -19,9 +19,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
-import json
 from collections.abc import Iterator
 
 import pytest
@@ -68,26 +65,8 @@ def _orchestrator(duration: float = 0.0) -> Orchestrator:
     return Orchestrator(settings, store, client)
 
 
-def test_signature_verification() -> None:
-    secret = "s3cr3t"
-    body = b'{"hello":"world"}'
-    sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    assert github.verify_signature(secret, body, sig)
-    assert not github.verify_signature(secret, body, "sha256=deadbeef")
-    # No configured secret => skipped (dev mode).
-    assert github.verify_signature("", body, None)
-
-
-def test_label_eligibility() -> None:
+def test_has_trigger_label() -> None:
     triggers = {"security", "dependency", "code-quality", "devin-remediate"}
-    assert github.is_eligible("opened", _issue(["security"]), triggers)
-    assert not github.is_eligible("opened", _issue(["question"]), triggers)
-    assert not github.is_eligible("edited", _issue(["security"]), triggers)
-
-
-def test_has_trigger_label_ignores_action() -> None:
-    triggers = {"security", "dependency"}
-    # Label-only check used by the polling monitor (no webhook action).
     assert github.has_trigger_label(_issue(["SECURITY"]), triggers)
     assert not github.has_trigger_label(_issue(["question"]), triggers)
 
@@ -125,22 +104,22 @@ def test_simulated_issue_source_returns_eligible_issues() -> None:
 def test_process_issue_triggers_and_dedupes() -> None:
     orch = _orchestrator()
 
-    outcome = asyncio.run(orch.process_issue("opened", _issue(["security"])))
+    outcome = asyncio.run(orch.process_issue(_issue(["security"])))
     assert outcome.result == "triggered"
     assert outcome.task is not None
     assert outcome.task.status == TaskStatus.RUNNING
     assert outcome.task.session_id is not None
 
-    dup = asyncio.run(orch.process_issue("opened", _issue(["security"])))
+    dup = asyncio.run(orch.process_issue(_issue(["security"])))
     assert dup.result == "duplicate"
 
-    ignored = asyncio.run(orch.process_issue("opened", _issue(["docs"], number=2)))
+    ignored = asyncio.run(orch.process_issue(_issue(["docs"], number=2)))
     assert ignored.result == "ignored"
 
 
 def test_poller_marks_completed() -> None:
     orch = _orchestrator(duration=0.0)
-    asyncio.run(orch.process_issue("opened", _issue(["dependency"])))
+    asyncio.run(orch.process_issue(_issue(["dependency"])))
     updated = asyncio.run(orch.refresh_active())
     assert updated == 1
 
@@ -161,7 +140,7 @@ def test_poller_marks_failed() -> None:
     client = SimulatedDevinClient(duration=0.0, failure_rate=1.0)
     orch = Orchestrator(settings, store, client)
 
-    asyncio.run(orch.process_issue("opened", _issue(["security"])))
+    asyncio.run(orch.process_issue(_issue(["security"])))
     asyncio.run(orch.refresh_active())
 
     task = store.list_tasks()[0]
@@ -179,44 +158,6 @@ def client() -> Iterator[TestClient]:
     )
     with TestClient(create_app(settings)) as test_client:
         yield test_client
-
-
-def test_webhook_flow(client: TestClient) -> None:
-    payload = {
-        "action": "opened",
-        "issue": {
-            "number": 7,
-            "title": "XSS in template",
-            "body": "fix it",
-            "html_url": "https://github.com/o/r/issues/7",
-            "labels": [{"name": "security"}],
-        },
-        "repository": {"full_name": "o/r"},
-    }
-    resp = client.post(
-        "/webhooks/github",
-        content=json.dumps(payload),
-        headers={"X-GitHub-Event": "issues"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["result"] == "triggered"
-
-    metrics = client.get("/metrics").json()
-    assert metrics["total"] == 1
-
-    dashboard = client.get("/dashboard")
-    assert dashboard.status_code == 200
-    assert "Remediation Orchestrator" in dashboard.text
-
-
-def test_webhook_ignores_non_issue_events(client: TestClient) -> None:
-    resp = client.post(
-        "/webhooks/github",
-        content="{}",
-        headers={"X-GitHub-Event": "push"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["result"] == "ignored"
 
 
 def test_simulate_endpoint(client: TestClient) -> None:

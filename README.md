@@ -32,8 +32,7 @@ remediation sessions, tracks their progress, and reports observable outcomes.
 This is a **self-standing monitor**: it polls the GitHub API for the target
 repository on a fixed interval, finds open issues carrying a trigger label, and
 starts a Devin session for each new one. No public URL or webhook configuration
-is required — just run the server. (A webhook receiver is still available as an
-optional push-based alternative.)
+is required — just run the server.
 
 ```
                  ┌──────── every ISSUE_POLL_INTERVAL_SECONDS ────────┐
@@ -86,7 +85,6 @@ service.
 | Method | Path                | Description                                       |
 | ------ | ------------------- | ------------------------------------------------- |
 | POST   | `/poll/run`         | Manually trigger an immediate repository scan      |
-| POST   | `/webhooks/github`  | GitHub `issues` webhook receiver (HMAC verified)  |
 | POST   | `/simulate/issue`   | Inject a synthetic issue (simulation mode only)   |
 | GET    | `/metrics`          | JSON metrics                                      |
 | GET    | `/dashboard`        | HTML dashboard (auto-refreshing)                  |
@@ -110,10 +108,9 @@ failure.
 | `GITHUB_REPO`                  | `royendo/superset-devin`         | Repository the monitor polls for issues          |
 | `GITHUB_TOKEN`                 | —                                | PAT to read issues (Issues: Read-only); optional for public repos |
 | `GITHUB_API_BASE`              | `https://api.github.com`         | GitHub REST API base URL                         |
-| `GITHUB_WEBHOOK_SECRET`        | —                                | If empty, signature checks are skipped (dev only) |
 | `DATABASE_PATH`                | `data/orchestrator.db`           | SQLite file path                                 |
 | `POLL_INTERVAL_SECONDS`        | `15`                             | Session reconciliation interval                  |
-| `ISSUE_POLLING_ENABLED`        | `true`                           | Set `false` for webhook-only mode                |
+| `ISSUE_POLLING_ENABLED`        | `true`                           | Set `false` to scan only on manual triggers      |
 | `ISSUE_POLL_INTERVAL_SECONDS`  | `30`                             | How often the monitor scans the repo for issues  |
 | `TRIGGER_LABELS`               | `devin-remediate,security,dependency,code-quality` | Comma-separated      |
 | `SIM_SESSION_DURATION_SECONDS` | `20`                             | Simulated session runtime                        |
@@ -186,34 +183,6 @@ the same trigger path the monitor uses.
 > Devin opens the actual pull requests through your Devin ↔ GitHub integration;
 > `GITHUB_TOKEN` is only used by this service to *read* issues.
 
-## GitHub webhook setup (optional)
-
-Polling needs no webhook. If you prefer GitHub to push events instead, set
-`ISSUE_POLLING_ENABLED=false` and configure a webhook:
-
-In the target repository: **Settings → Webhooks → Add webhook**.
-
-- **Payload URL:** `https://<your-host>/webhooks/github`
-- **Content type:** `application/json`
-- **Secret:** the same value as `GITHUB_WEBHOOK_SECRET`
-- **Events:** *Let me select individual events* → check **Issues** only
-
-For local testing you can forward webhooks with a tunnel (e.g. `cloudflared`,
-`ngrok`) or replay a saved payload:
-
-```bash
-SECRET="your_secret"
-BODY='{"action":"opened","issue":{"number":42,"title":"Bump urllib3",
-  "body":"CVE fix","html_url":"https://github.com/o/r/issues/42",
-  "labels":[{"name":"security"}]},"repository":{"full_name":"o/r"}}'
-SIG="sha256=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
-curl -X POST http://localhost:8000/webhooks/github \
-  -H "X-GitHub-Event: issues" \
-  -H "X-Hub-Signature-256: $SIG" \
-  -H "Content-Type: application/json" \
-  -d "$BODY"
-```
-
 ## Project layout
 
 ```
@@ -223,7 +192,7 @@ app/
   db.py            # SQLite task store
   devin_client.py  # real + simulated Devin clients
   issues.py        # real + simulated GitHub issue sources (polling)
-  github.py        # signature verify, payload parse, label filter, prompt build
+  github.py        # label-based eligibility + Devin prompt build
   orchestrator.py  # core: scan/classify -> start session -> reconcile -> metrics
   poller.py        # IssuePoller (monitor) + PollingWorker (session reconcile)
   keyboard.py      # 's' keyboard shortcut to trigger a scan

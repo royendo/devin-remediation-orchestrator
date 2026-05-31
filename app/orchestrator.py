@@ -82,12 +82,12 @@ class Orchestrator:
     def store(self) -> TaskStore:
         return self._store
 
-    async def process_issue(self, action: str, issue: GitHubIssue) -> IssueOutcome:
-        """Classify a webhook issue event and, if eligible, start a session."""
-        if not github.is_eligible(action, issue, self._settings.trigger_label_set):
+    async def process_issue(self, issue: GitHubIssue) -> IssueOutcome:
+        """Classify a single issue and, if eligible, start a session."""
+        if not github.has_trigger_label(issue, self._settings.trigger_label_set):
             return IssueOutcome(
                 "ignored",
-                f"action={action!r} labels={issue.labels} did not match triggers",
+                f"labels={issue.labels} did not match triggers",
             )
         return await self._trigger(issue)
 

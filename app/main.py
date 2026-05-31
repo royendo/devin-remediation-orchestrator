@@ -18,16 +18,15 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import github, simulation
+from app import simulation
 from app.config import Settings, get_settings
 from app.dashboard import render_dashboard
 from app.db import TaskStore
@@ -111,37 +110,6 @@ async def poll_run(request: Request) -> JSONResponse:
     return _scan_response(result)
 
 
-@router.post("/webhooks/github")
-async def github_webhook(
-    request: Request,
-    x_github_event: str = Header(default=""),
-    x_hub_signature_256: str | None = Header(default=None),
-) -> JSONResponse:
-    settings = _settings(request)
-    body = await request.body()
-    if not github.verify_signature(
-        settings.github_webhook_secret, body, x_hub_signature_256
-    ):
-        raise HTTPException(status_code=401, detail="invalid signature")
-
-    if x_github_event == "ping":
-        return JSONResponse({"result": "pong"})
-    if x_github_event != "issues":
-        return JSONResponse({"result": "ignored", "detail": "not an issues event"})
-
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="invalid JSON") from exc
-
-    action, issue = github.parse_issue_payload(payload)
-    if issue is None:
-        return JSONResponse({"result": "ignored", "detail": "no issue in payload"})
-
-    outcome = await _orchestrator(request).process_issue(action, issue)
-    return _outcome_response(outcome)
-
-
 @router.post("/simulate/issue")
 async def simulate_issue(request: Request) -> JSONResponse:
     if not _simulated(_settings(request)):
@@ -149,7 +117,7 @@ async def simulate_issue(request: Request) -> JSONResponse:
             status_code=403, detail="simulation endpoint disabled in live mode"
         )
     issue = simulation.make_issue()
-    outcome = await _orchestrator(request).process_issue("opened", issue)
+    outcome = await _orchestrator(request).process_issue(issue)
     return _outcome_response(outcome)
 
 
@@ -196,7 +164,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         issue_poller.start()
         keyboard.start()
     else:
-        logger.info("Issue polling disabled; running in webhook-only mode.")
+        logger.info("Issue polling disabled; scan only via /poll/run or 's' key.")
     try:
         yield
     finally:

@@ -16,10 +16,10 @@
 # under the License.
 """Issue sources for the standalone monitor.
 
-The monitor polls a *source* for the current set of open issues rather than
-waiting for GitHub to push webhook events.  ``GitHubIssueSource`` reads them
-from the GitHub REST API; ``SimulatedIssueSource`` returns a deterministic set
-so the whole pipeline can be exercised offline with no credentials.
+The monitor polls a *source* for the current set of open issues.
+``GitHubIssueSource`` reads them from the GitHub REST API;
+``SimulatedIssueSource`` returns a deterministic set so the whole pipeline can
+be exercised offline with no credentials.
 """
 
 from __future__ import annotations

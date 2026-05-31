@@ -36,7 +36,6 @@ class Settings(BaseSettings):
     devin_api_base: str = "https://api.devin.ai/v3"
 
     # --- GitHub ---
-    github_webhook_secret: str = ""
     # Repository the standalone monitor polls for eligible issues.
     github_repo: str = "royendo/superset-devin"
     # Personal access token used to read issues (and lift the rate limit).
@@ -51,8 +50,8 @@ class Settings(BaseSettings):
     simulation_mode: bool = False
     # How often the session-reconciliation worker refreshes active sessions.
     poll_interval_seconds: float = 15.0
-    # Whether the standalone monitor scans the repository for issues. Disable to
-    # run in pure webhook mode (or to keep tests deterministic).
+    # Whether the standalone monitor scans the repository for issues on a timer.
+    # Disable to drive scans only manually (POST /poll/run, keyboard, tests).
     issue_polling_enabled: bool = True
     # How often the monitor scans the repository for new eligible issues.
     issue_poll_interval_seconds: float = 30.0
