@@ -102,8 +102,9 @@ Three layers answer that question without any external tooling:
 1. **HTML dashboard** (`/dashboard`, auto-refresh): a liveness strip (mode,
    scans run, last/next scan, uptime), headline cards (detected, triggered,
    active, completed, failed, PRs, success rate, throughput/hr, avg & median
-   time-to-PR), a **scan funnel** (detected → eligible → triggered → ignored →
-   deduped), a **failure-reasons** panel, and the per-task table with status
+   time-to-PR), a **scan funnel** over **unique issues** (detected → eligible →
+   triggered → ignored) plus a separate cumulative "re-scan skips (deduped)"
+   signal, a **failure-reasons** panel, and the per-task table with status
    badges and session/PR links.
 2. **JSON metrics** — `/metrics` exposes all of the above for scripting or
    piping into any monitoring tool.
@@ -116,14 +117,15 @@ What each signal tells a leader:
 | Question                              | Signal                                              |
 | ------------------------------------- | --------------------------------------------------- |
 | Is the monitor alive and polling?     | `last_scan_at`, `next_scan_in_seconds`, `scans_completed`, `uptime_seconds` |
-| Is it acting on the right issues?     | scan funnel: `issues_detected_total` → `triggered_total` / `ignored_total` / `duplicate_total` |
-| Are remediations succeeding?          | `success_rate`, `completed_sessions` vs `failed_sessions` |
+| Is it acting on the right issues?     | scan funnel (unique issues): `issues_detected_total` → `eligible_total` → `triggered_total` / `ignored_total`; `duplicate_total` = cumulative re-scan skips |
+| Are remediations succeeding?          | `success_rate`, `completed_sessions` vs `failed_sessions` (a **merged PR** counts as completed even if the Devin session is still running) |
 | When they fail, why?                  | `failure_reasons` (grouped error messages)          |
 | How fast / how much work flows?       | `throughput_per_hour`, `average_/median_completion_seconds` |
 
 > Task metrics (completed/failed/PRs) are persisted in SQLite and survive
 > restarts; the scan-funnel/liveness counters are in-memory and reset on
-> restart.
+> restart. The funnel counts *distinct* issues (by `repo#number`), so it does
+> not inflate as the same issues are re-scanned.
 
 ![Dashboard](docs/dashboard.png)
 

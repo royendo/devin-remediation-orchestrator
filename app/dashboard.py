@@ -88,16 +88,22 @@ def _funnel(metrics: Metrics) -> str:
         ("Eligible", metrics.eligible_total),
         ("Triggered", metrics.triggered_total),
         ("Ignored (no label)", metrics.ignored_total),
-        ("Duplicate (deduped)", metrics.duplicate_total),
     ]
     cells = "".join(
         f'<div class="fstep"><div class="fv">{v}</div>'
         f'<div class="fl">{escape(label)}</div></div>'
         for label, v in steps
     )
+    # Duplicate is a cumulative liveness signal (re-scan hits), not part of the
+    # unique-issue funnel, so it is shown separately.
+    dedup = (
+        f'<div class="fstep dedup"><div class="fv">{metrics.duplicate_total}</div>'
+        '<div class="fl">Re-scan skips (deduped, cumulative)</div></div>'
+    )
     return (
-        '<section class="panel"><h2>Scan funnel (since start)</h2>'
-        f'<div class="funnel">{cells}</div></section>'
+        '<section class="panel"><h2>Scan funnel (unique issues since start)</h2>'
+        f'<div class="funnel">{cells}</div>'
+        f'<div class="funnel">{dedup}</div></section>'
     )
 
 
