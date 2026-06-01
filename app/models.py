@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskStatus(str, Enum):
@@ -70,13 +70,47 @@ class Task(BaseModel):
 
 
 class Metrics(BaseModel):
-    """Aggregated metrics exposed via ``/metrics``."""
+    """Aggregated metrics exposed via ``/metrics``.
 
+    Designed to answer, at a glance, "is this system working?":
+
+    * **Task state** — ``pending``/``active_sessions``/``completed_sessions``/
+      ``failed_sessions`` show where every tracked issue is in its lifecycle.
+    * **Success/failure signals** — ``success_rate`` plus ``failure_reasons``
+      (grouped error messages) say *whether* remediations land and *why* they
+      don't.
+    * **Throughput / lead time** — ``throughput_per_hour`` and the
+      average/median completion times show how fast work flows through.
+    * **Liveness** — ``last_scan_at``/``scans_completed``/``uptime_seconds``/
+      ``next_scan_in_seconds`` prove the monitor is actually polling.
+    """
+
+    # --- Task state (derived from the persisted store) ---
     total: int
     pending: int
     active_sessions: int
     completed_sessions: int
     failed_sessions: int
     prs_created: int
+
+    # --- Outcome signals ---
     success_rate: float
-    average_completion_seconds: float | None
+    failure_reasons: dict[str, int] = Field(default_factory=dict)
+
+    # --- Throughput / lead time ---
+    average_completion_seconds: float | None = None
+    median_completion_seconds: float | None = None
+    throughput_per_hour: float = 0.0
+
+    # --- Liveness / scan funnel (runtime counters since process start) ---
+    monitored_repo: str = ""
+    live_mode: bool = False
+    scans_completed: int = 0
+    issues_detected_total: int = 0
+    eligible_total: int = 0
+    triggered_total: int = 0
+    ignored_total: int = 0
+    duplicate_total: int = 0
+    last_scan_at: str | None = None
+    next_scan_in_seconds: float | None = None
+    uptime_seconds: float = 0.0

@@ -24,7 +24,11 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 
 from app import simulation
 from app.config import Settings, get_settings
@@ -67,6 +71,7 @@ def _scan_response(result: ScanResult) -> JSONResponse:
             "eligible": result.eligible,
             "triggered": result.triggered,
             "duplicate": result.duplicate,
+            "ignored": result.ignored,
             "errors": result.errors,
             "triggered_tasks": [t.model_dump() for t in result.triggered_tasks],
         }

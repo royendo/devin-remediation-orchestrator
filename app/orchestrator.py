@@ -24,8 +24,10 @@ ones to Devin, persists task state and reconciles session status.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from statistics import median
 
 from app import github
 from app.config import Settings
@@ -61,8 +63,38 @@ class ScanResult:
     eligible: int = 0
     triggered: int = 0
     duplicate: int = 0
+    ignored: int = 0
     errors: int = 0
     triggered_tasks: list[Task] = field(default_factory=list)
+
+
+@dataclass
+class RuntimeStats:
+    """In-memory scan telemetry accumulated since the process started.
+
+    These counters reset on restart (unlike the persisted task metrics); they
+    exist to answer "is the monitor actually polling, and what is it seeing?".
+    """
+
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    scans_completed: int = 0
+    issues_detected_total: int = 0
+    eligible_total: int = 0
+    triggered_total: int = 0
+    ignored_total: int = 0
+    duplicate_total: int = 0
+    error_total: int = 0
+    last_scan_at: str | None = None
+
+    def record(self, result: ScanResult) -> None:
+        self.scans_completed += 1
+        self.issues_detected_total += result.scanned
+        self.eligible_total += result.eligible
+        self.triggered_total += result.triggered
+        self.ignored_total += result.ignored
+        self.duplicate_total += result.duplicate
+        self.error_total += result.errors
+        self.last_scan_at = utcnow()
 
 
 class Orchestrator:
@@ -77,10 +109,15 @@ class Orchestrator:
         self._settings = settings
         self._store = store
         self._client = client
+        self._stats = RuntimeStats()
 
     @property
     def store(self) -> TaskStore:
         return self._store
+
+    @property
+    def stats(self) -> RuntimeStats:
+        return self._stats
 
     async def process_issue(self, issue: GitHubIssue) -> IssueOutcome:
         """Classify a single issue and, if eligible, start a session."""
@@ -103,6 +140,7 @@ class Orchestrator:
         triggers = self._settings.trigger_label_set
         for issue in issues:
             if not github.has_trigger_label(issue, triggers):
+                result.ignored += 1
                 continue
             result.eligible += 1
             outcome = await self._trigger(issue)
@@ -114,13 +152,19 @@ class Orchestrator:
                 result.duplicate += 1
             elif outcome.result == "error":
                 result.errors += 1
-        if result.triggered:
-            logger.info(
-                "Scan started %s session(s) (%s eligible, %s already tracked)",
-                result.triggered,
-                result.eligible,
-                result.duplicate,
-            )
+        self._stats.record(result)
+        # Always emit a structured, log-greppable summary of the scan funnel so
+        # the system is observable even without the dashboard or /metrics.
+        logger.info(
+            "scan complete scanned=%s eligible=%s triggered=%s "
+            "duplicate=%s ignored=%s errors=%s",
+            result.scanned,
+            result.eligible,
+            result.triggered,
+            result.duplicate,
+            result.ignored,
+            result.errors,
+        )
         return result
 
     async def _trigger(self, issue: GitHubIssue) -> IssueOutcome:
@@ -227,9 +271,21 @@ class Orchestrator:
             if t.status == TaskStatus.COMPLETED and t.completed_at
         ]
         avg = sum(durations) / len(durations) if durations else None
+        med = median(durations) if durations else None
 
         finished = completed + failed
         success_rate = (completed / finished) if finished else 0.0
+
+        failure_reasons = Counter(
+            _short_reason(t.error)
+            for t in tasks
+            if t.status == TaskStatus.FAILED
+        )
+
+        stats = self._stats
+        now = datetime.now(timezone.utc)
+        uptime = max((now - stats.started_at).total_seconds(), 0.0)
+        throughput = (completed / uptime * 3600.0) if uptime > 0 else 0.0
 
         return Metrics(
             total=len(tasks),
@@ -239,8 +295,44 @@ class Orchestrator:
             failed_sessions=failed,
             prs_created=prs,
             success_rate=round(success_rate, 4),
+            failure_reasons=dict(failure_reasons),
             average_completion_seconds=(round(avg, 2) if avg is not None else None),
+            median_completion_seconds=(round(med, 2) if med is not None else None),
+            throughput_per_hour=round(throughput, 2),
+            monitored_repo=self._settings.github_repo,
+            live_mode=not (
+                self._settings.simulation_mode
+                or not self._settings.devin_configured
+            ),
+            scans_completed=stats.scans_completed,
+            issues_detected_total=stats.issues_detected_total,
+            eligible_total=stats.eligible_total,
+            triggered_total=stats.triggered_total,
+            ignored_total=stats.ignored_total,
+            duplicate_total=stats.duplicate_total,
+            last_scan_at=stats.last_scan_at,
+            next_scan_in_seconds=self._next_scan_in_seconds(now),
+            uptime_seconds=round(uptime, 1),
         )
+
+    def _next_scan_in_seconds(self, now: datetime) -> float | None:
+        """Seconds until the next scheduled scan, if timer polling is on."""
+        if not self._settings.issue_polling_enabled:
+            return None
+        if self._stats.last_scan_at is None:
+            return 0.0
+        last = datetime.fromisoformat(self._stats.last_scan_at)
+        elapsed = (now - last).total_seconds()
+        remaining = self._settings.issue_poll_interval_seconds - elapsed
+        return round(max(remaining, 0.0), 1)
+
+
+def _short_reason(error: str | None) -> str:
+    """Collapse a (possibly long) error into a stable, groupable label."""
+    if not error:
+        return "unknown"
+    first_line = error.strip().splitlines()[0]
+    return first_line[:80]
 
 
 def _duration_seconds(task: Task) -> float:
