@@ -27,7 +27,6 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
-    PlainTextResponse,
     RedirectResponse,
 )
 
@@ -40,7 +39,6 @@ from app.issues import build_issue_source
 from app.keyboard import KeyboardTrigger
 from app.orchestrator import IssueOutcome, Orchestrator, ScanResult
 from app.poller import IssuePoller, PollingWorker
-from app.prometheus import render_prometheus
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,13 +129,6 @@ async def simulate_issue(request: Request) -> JSONResponse:
 @router.get("/metrics")
 async def metrics(request: Request) -> JSONResponse:
     return JSONResponse(_orchestrator(request).metrics().model_dump())
-
-
-@router.get("/metrics/prometheus", response_class=PlainTextResponse)
-async def metrics_prometheus(request: Request) -> PlainTextResponse:
-    """Expose metrics in Prometheus text format for scraping into Grafana etc."""
-    body = render_prometheus(_orchestrator(request).metrics())
-    return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
 
 
 @router.get("/dashboard", response_class=HTMLResponse)

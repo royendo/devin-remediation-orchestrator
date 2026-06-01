@@ -85,7 +85,6 @@ service.
 | POST   | `/poll/run`           | Manually trigger an immediate repository scan      |
 | POST   | `/simulate/issue`     | Inject a synthetic issue (simulation mode only)   |
 | GET    | `/metrics`            | JSON metrics (task state, outcomes, throughput, scan funnel) |
-| GET    | `/metrics/prometheus` | Same metrics in Prometheus text format (scrape into Grafana/Datadog) |
 | GET    | `/dashboard`          | HTML dashboard (auto-refreshing)                  |
 | GET    | `/health`             | Liveness + mode + monitored repo                  |
 
@@ -106,9 +105,8 @@ Three layers answer that question without any external tooling:
    time-to-PR), a **scan funnel** (detected → eligible → triggered → ignored →
    deduped), a **failure-reasons** panel, and the per-task table with status
    badges and session/PR links.
-2. **Metrics endpoints** — `/metrics` (JSON) and `/metrics/prometheus`
-   (Prometheus text, scrape straight into Grafana/Datadog for org-wide
-   dashboards and alerts).
+2. **JSON metrics** — `/metrics` exposes all of the above for scripting or
+   piping into any monitoring tool.
 3. **Structured logs** — every scan emits one greppable line:
    `scan complete scanned=… eligible=… triggered=… duplicate=… ignored=… errors=…`,
    plus per-session start/reconcile lines, for log-based monitoring.

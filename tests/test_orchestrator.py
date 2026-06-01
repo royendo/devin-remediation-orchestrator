@@ -32,7 +32,6 @@ from app.issues import IssueSourceProtocol, SimulatedIssueSource
 from app.main import create_app
 from app.models import GitHubIssue, TaskStatus
 from app.orchestrator import Orchestrator
-from app.prometheus import render_prometheus
 
 
 class _StaticIssueSource:
@@ -140,10 +139,6 @@ def test_metrics_group_failure_reasons() -> None:
     m = orch.metrics()
     assert m.failed_sessions == 2
     assert sum(m.failure_reasons.values()) == 2
-
-    text = render_prometheus(m)
-    assert "orchestrator_tasks_failed 2" in text
-    assert "orchestrator_failures_by_reason" in text
 
 
 def test_simulated_issue_source_returns_eligible_issues() -> None:
@@ -254,13 +249,3 @@ def test_metrics_endpoint_includes_observability(client: TestClient) -> None:
         assert key in body
     assert body["scans_completed"] >= 1
 
-
-def test_prometheus_endpoint(client: TestClient) -> None:
-    client.post("/poll/run")
-    resp = client.get("/metrics/prometheus")
-    assert resp.status_code == 200
-    assert "text/plain" in resp.headers["content-type"]
-    text = resp.text
-    assert "# TYPE orchestrator_tasks_total gauge" in text
-    assert "orchestrator_scans_completed_total" in text
-    assert "orchestrator_issues_triggered_total" in text
