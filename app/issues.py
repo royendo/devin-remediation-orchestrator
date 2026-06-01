@@ -24,6 +24,7 @@ be exercised offline with no credentials.
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 import httpx
@@ -31,6 +32,19 @@ import httpx
 from app import simulation
 from app.config import Settings
 from app.models import GitHubIssue
+
+# Caps pagination so a misbehaving API can never spin the monitor forever
+# (GitHub returns at most 100 issues/page, so this covers 10k issues).
+_MAX_PAGES = 100
+_LINK_NEXT = re.compile(r'<([^>]+)>;\s*rel="next"')
+
+
+def _next_link(link_header: str | None) -> str | None:
+    """Return the ``rel="next"`` URL from a GitHub ``Link`` header, if any."""
+    if not link_header:
+        return None
+    match = _LINK_NEXT.search(link_header)
+    return match.group(1) if match else None
 
 
 class IssueSourceProtocol(Protocol):
@@ -55,7 +69,9 @@ def _parse_labels(raw_labels: object) -> list[str]:
 class GitHubIssueSource:
     """Reads open issues for a repository from the GitHub REST API."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, client: httpx.AsyncClient | None = None
+    ) -> None:
         self._repo = settings.github_repo
         self._base = settings.github_api_base.rstrip("/")
         headers = {
@@ -64,37 +80,52 @@ class GitHubIssueSource:
         }
         if settings.github_token:
             headers["Authorization"] = f"Bearer {settings.github_token}"
-        self._client = httpx.AsyncClient(
+        # ``client`` is injectable so tests can supply a MockTransport.
+        self._client = client or httpx.AsyncClient(
             base_url=self._base,
             headers=headers,
             timeout=httpx.Timeout(30.0),
         )
 
     async def list_open_issues(self) -> list[GitHubIssue]:
-        resp = await self._client.get(
-            f"/repos/{self._repo}/issues",
-            params={"state": "open", "per_page": 100},
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        """Return every open issue, following ``Link: rel="next"`` pagination.
+
+        GitHub caps a page at 100 items, so a repo with more open issues than
+        that would otherwise be silently truncated to the first page.
+        """
         issues: list[GitHubIssue] = []
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            # The issues endpoint also returns pull requests; skip them.
-            if item.get("pull_request") is not None:
-                continue
-            issues.append(
-                GitHubIssue(
-                    number=int(item.get("number", 0)),
-                    title=str(item.get("title", "")),
-                    body=str(item.get("body") or ""),
-                    html_url=str(item.get("html_url", "")),
-                    repo_full_name=self._repo,
-                    labels=_parse_labels(item.get("labels", [])),
-                )
-            )
+        # First request is relative (uses base_url + params); subsequent pages
+        # use the absolute ``next`` URL from the Link header, which already
+        # carries the query string, so params are dropped after page 1.
+        url: str | None = f"/repos/{self._repo}/issues"
+        params: dict[str, str | int] | None = {"state": "open", "per_page": 100}
+        pages = 0
+        while url is not None and pages < _MAX_PAGES:
+            resp = await self._client.get(url, params=params)
+            resp.raise_for_status()
+            for item in resp.json():
+                issue = self._to_issue(item)
+                if issue is not None:
+                    issues.append(issue)
+            url = _next_link(resp.headers.get("link"))
+            params = None
+            pages += 1
         return issues
+
+    def _to_issue(self, item: object) -> GitHubIssue | None:
+        if not isinstance(item, dict):
+            return None
+        # The issues endpoint also returns pull requests; skip them.
+        if item.get("pull_request") is not None:
+            return None
+        return GitHubIssue(
+            number=int(item.get("number", 0)),
+            title=str(item.get("title", "")),
+            body=str(item.get("body") or ""),
+            html_url=str(item.get("html_url", "")),
+            repo_full_name=self._repo,
+            labels=_parse_labels(item.get("labels", [])),
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()

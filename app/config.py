@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # --- Server ---
     host: str = "0.0.0.0"  # noqa: S104
     port: int = 8000
+    # Optional shared secret protecting the manual-trigger endpoints. When set,
+    # POST /poll/run and /simulate/issue require a matching `X-Auth-Token`
+    # header. Left empty, those endpoints stay open (handy for the zero-cred
+    # local demo); set it for any shared/exposed deployment.
+    poll_api_token: str = ""
 
     @property
     def trigger_label_set(self) -> set[str]:

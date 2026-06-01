@@ -66,6 +66,7 @@ Besides the interval, you can force an immediate scan two ways:
 
 - **HTTP:** `curl -X POST http://localhost:8000/poll/run` — returns a JSON
   summary (`scanned`, `eligible`, `triggered`, `duplicate`, `ignored`, `errors`).
+  If `POLL_API_TOKEN` is set, add `-H "X-Auth-Token: $POLL_API_TOKEN"`.
 - **Keyboard:** when the server runs attached to a terminal, press **`s`** to
   scan now (Ctrl-C to quit). Disabled automatically when stdin is not a TTY.
 
@@ -82,8 +83,8 @@ service.
 
 | Method | Path                | Description                                       |
 | ------ | ------------------- | ------------------------------------------------- |
-| POST   | `/poll/run`           | Manually trigger an immediate repository scan      |
-| POST   | `/simulate/issue`     | Inject a synthetic issue (simulation mode only)   |
+| POST   | `/poll/run`           | Manually trigger an immediate repository scan (auth: `X-Auth-Token` if `POLL_API_TOKEN` set) |
+| POST   | `/simulate/issue`     | Inject a synthetic issue (simulation mode only; same auth) |
 | GET    | `/metrics`            | JSON metrics (task state, outcomes, throughput, scan funnel) |
 | GET    | `/dashboard`          | HTML dashboard (auto-refreshing)                  |
 | GET    | `/health`             | Liveness + mode + monitored repo                  |
@@ -148,6 +149,7 @@ What each signal tells a leader:
 | `SIM_SESSION_DURATION_SECONDS` | `20`                             | Simulated session runtime                        |
 | `SIM_FAILURE_RATE`             | `0.2`                            | Fraction of simulated sessions that fail         |
 | `HOST` / `PORT`                | `0.0.0.0` / `8000`               | Bind address                                     |
+| `POLL_API_TOKEN`               | —                                | If set, `/poll/run` and `/simulate/issue` require header `X-Auth-Token` |
 
 If `DEVIN_API_KEY`/`DEVIN_ORG_ID` are missing, the service automatically falls
 back to simulation mode.
