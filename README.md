@@ -180,6 +180,17 @@ the same trigger path the monitor uses.
 3. Run the server. As a polling monitor it needs no inbound network access, so
    it can run anywhere with outbound HTTPS to GitHub and the Devin API.
 
+```bash
+docker compose up --build   # reads .env; LIVE when SIMULATION_MODE=false
+# or, locally:
+make install && make run     # press 's' in the terminal to scan now
+```
+
+`docker-compose.yml` reads every setting from `.env` (with simulation-friendly
+defaults), so going LIVE needs no edits to the compose file. The `s` keyboard
+shortcut needs an attached terminal, so use `make run` (or `POST /poll/run`)
+rather than `docker compose up` if you want the key.
+
 > Devin opens the actual pull requests through your Devin ↔ GitHub integration;
 > `GITHUB_TOKEN` is only used by this service to *read* issues.
 
