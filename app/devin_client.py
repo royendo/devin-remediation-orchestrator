@@ -60,6 +60,15 @@ def _extract_pr_url(payload: dict[str, object]) -> str | None:
     The exact field has shifted across API versions, so we probe the handful
     of shapes that have been observed rather than assuming a single key.
     """
+    # v3 returns a ``pull_requests`` array of ``{pr_url, pr_state}`` objects.
+    pull_requests = payload.get("pull_requests")
+    if isinstance(pull_requests, list):
+        for item in pull_requests:
+            if isinstance(item, dict):
+                value = item.get("pr_url")
+                if isinstance(value, str) and value.startswith("http"):
+                    return value
+
     candidates: list[object] = [
         payload.get("pull_request"),
         payload.get("pull_request_url"),
@@ -92,7 +101,7 @@ class DevinClient:
     async def create_session(self, prompt: str) -> SessionResult:
         resp = await self._client.post(
             f"/organizations/{self._org_id}/sessions",
-            json={"prompt": prompt, "idempotent": True},
+            json={"prompt": prompt},
         )
         resp.raise_for_status()
         data = resp.json()

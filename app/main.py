@@ -18,22 +18,23 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from app import github, simulation
+from app import simulation
 from app.config import Settings, get_settings
 from app.dashboard import render_dashboard
 from app.db import TaskStore
 from app.devin_client import build_client
-from app.orchestrator import IssueOutcome, Orchestrator
-from app.poller import PollingWorker
+from app.issues import build_issue_source
+from app.keyboard import KeyboardTrigger
+from app.orchestrator import IssueOutcome, Orchestrator, ScanResult
+from app.poller import IssuePoller, PollingWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,9 +50,27 @@ def _orchestrator(request: Request) -> Orchestrator:
     return orchestrator
 
 
+def _issue_poller(request: Request) -> IssuePoller:
+    poller: IssuePoller = request.app.state.issue_poller
+    return poller
+
+
 def _settings(request: Request) -> Settings:
     settings: Settings = request.app.state.settings
     return settings
+
+
+def _scan_response(result: ScanResult) -> JSONResponse:
+    return JSONResponse(
+        {
+            "scanned": result.scanned,
+            "eligible": result.eligible,
+            "triggered": result.triggered,
+            "duplicate": result.duplicate,
+            "errors": result.errors,
+            "triggered_tasks": [t.model_dump() for t in result.triggered_tasks],
+        }
+    )
 
 
 def _simulated(settings: Settings) -> bool:
@@ -75,38 +94,20 @@ async def root() -> RedirectResponse:
 
 @router.get("/health")
 async def health(request: Request) -> dict[str, Any]:
-    return {"status": "ok", "simulation_mode": _simulated(_settings(request))}
-
-
-@router.post("/webhooks/github")
-async def github_webhook(
-    request: Request,
-    x_github_event: str = Header(default=""),
-    x_hub_signature_256: str | None = Header(default=None),
-) -> JSONResponse:
     settings = _settings(request)
-    body = await request.body()
-    if not github.verify_signature(
-        settings.github_webhook_secret, body, x_hub_signature_256
-    ):
-        raise HTTPException(status_code=401, detail="invalid signature")
+    return {
+        "status": "ok",
+        "simulation_mode": _simulated(settings),
+        "monitored_repo": settings.github_repo,
+        "issue_poll_interval_seconds": settings.issue_poll_interval_seconds,
+    }
 
-    if x_github_event == "ping":
-        return JSONResponse({"result": "pong"})
-    if x_github_event != "issues":
-        return JSONResponse({"result": "ignored", "detail": "not an issues event"})
 
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="invalid JSON") from exc
-
-    action, issue = github.parse_issue_payload(payload)
-    if issue is None:
-        return JSONResponse({"result": "ignored", "detail": "no issue in payload"})
-
-    outcome = await _orchestrator(request).process_issue(action, issue)
-    return _outcome_response(outcome)
+@router.post("/poll/run")
+async def poll_run(request: Request) -> JSONResponse:
+    """Manually trigger an immediate scan for eligible issues."""
+    result = await _issue_poller(request).scan_now()
+    return _scan_response(result)
 
 
 @router.post("/simulate/issue")
@@ -116,7 +117,7 @@ async def simulate_issue(request: Request) -> JSONResponse:
             status_code=403, detail="simulation endpoint disabled in live mode"
         )
     issue = simulation.make_issue()
-    outcome = await _orchestrator(request).process_issue("opened", issue)
+    outcome = await _orchestrator(request).process_issue(issue)
     return _outcome_response(outcome)
 
 
@@ -137,23 +138,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     store = TaskStore(settings.database_path)
     client = build_client(settings)
+    source = build_issue_source(settings)
     orchestrator = Orchestrator(settings, store, client)
     worker = PollingWorker(orchestrator, settings.poll_interval_seconds)
+    issue_poller = IssuePoller(
+        orchestrator, source, settings.issue_poll_interval_seconds
+    )
+    keyboard = KeyboardTrigger(issue_poller.scan_now)
 
     app.state.store = store
     app.state.client = client
+    app.state.source = source
     app.state.orchestrator = orchestrator
     app.state.worker = worker
+    app.state.issue_poller = issue_poller
+    app.state.keyboard = keyboard
 
     logger.info(
-        "Orchestrator starting in %s mode",
+        "Orchestrator starting in %s mode, monitoring %s",
         "SIMULATION" if _simulated(settings) else "LIVE",
+        settings.github_repo,
     )
     worker.start()
+    if settings.issue_polling_enabled:
+        issue_poller.start()
+        keyboard.start()
+    else:
+        logger.info("Issue polling disabled; scan only via /poll/run or 's' key.")
     try:
         yield
     finally:
+        await keyboard.stop()
+        await issue_poller.stop()
         await worker.stop()
+        await source.aclose()
         await client.aclose()
         store.close()
 

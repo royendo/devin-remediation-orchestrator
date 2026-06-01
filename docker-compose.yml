@@ -21,15 +21,24 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Defaults to a self-contained simulation so `docker compose up` just works.
-      SIMULATION_MODE: "true"
+      # Zero-config default is a self-contained simulation, so `docker compose
+      # up` just works. Every value below can be overridden from .env (or the
+      # shell) — e.g. set SIMULATION_MODE=false + the DEVIN_*/GITHUB_* vars in
+      # .env to run LIVE with no edits to this file.
+      SIMULATION_MODE: "${SIMULATION_MODE:-true}"
       DATABASE_PATH: "/app/data/orchestrator.db"
-      POLL_INTERVAL_SECONDS: "5"
-      SIM_SESSION_DURATION_SECONDS: "15"
-      # For LIVE mode, set these (and SIMULATION_MODE=false):
-      # DEVIN_API_KEY: "cog_..."
-      # DEVIN_ORG_ID: "your_org_id"
-      # GITHUB_WEBHOOK_SECRET: "your_webhook_secret"
+      POLL_INTERVAL_SECONDS: "${POLL_INTERVAL_SECONDS:-5}"
+      ISSUE_POLL_INTERVAL_SECONDS: "${ISSUE_POLL_INTERVAL_SECONDS:-15}"
+      SIM_SESSION_DURATION_SECONDS: "${SIM_SESSION_DURATION_SECONDS:-15}"
+      # LIVE mode (set SIMULATION_MODE=false in .env):
+      DEVIN_API_KEY: "${DEVIN_API_KEY:-}"
+      DEVIN_ORG_ID: "${DEVIN_ORG_ID:-}"
+      DEVIN_API_BASE: "${DEVIN_API_BASE:-https://api.devin.ai/v3}"
+      GITHUB_REPO: "${GITHUB_REPO:-royendo/superset-devin}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      GITHUB_API_BASE: "${GITHUB_API_BASE:-https://api.github.com}"
+      ISSUE_POLLING_ENABLED: "${ISSUE_POLLING_ENABLED:-true}"
+      TRIGGER_LABELS: "${TRIGGER_LABELS:-devin-remediate,security,dependency,code-quality}"
     env_file:
       - path: .env
         required: false
