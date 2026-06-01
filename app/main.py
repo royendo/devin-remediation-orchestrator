@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -82,6 +83,20 @@ def _simulated(settings: Settings) -> bool:
     return settings.simulation_mode or not settings.devin_configured
 
 
+def _require_token(request: Request) -> None:
+    """Enforce the shared-secret header on state-changing endpoints.
+
+    No-op when ``poll_api_token`` is unset (open by default for the local
+    demo); otherwise the request must carry a matching ``X-Auth-Token`` header.
+    """
+    expected = _settings(request).poll_api_token
+    if not expected:
+        return
+    provided = request.headers.get("x-auth-token", "")
+    if not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="invalid or missing X-Auth-Token")
+
+
 def _outcome_response(outcome: IssueOutcome) -> JSONResponse:
     return JSONResponse(
         {
@@ -111,12 +126,14 @@ async def health(request: Request) -> dict[str, Any]:
 @router.post("/poll/run")
 async def poll_run(request: Request) -> JSONResponse:
     """Manually trigger an immediate scan for eligible issues."""
+    _require_token(request)
     result = await _issue_poller(request).scan_now()
     return _scan_response(result)
 
 
 @router.post("/simulate/issue")
 async def simulate_issue(request: Request) -> JSONResponse:
+    _require_token(request)
     if not _simulated(_settings(request)):
         raise HTTPException(
             status_code=403, detail="simulation endpoint disabled in live mode"

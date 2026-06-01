@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,7 +29,7 @@ from app import github
 from app.config import Settings
 from app.db import TaskStore
 from app.devin_client import SessionResult, SimulatedDevinClient
-from app.issues import IssueSourceProtocol, SimulatedIssueSource
+from app.issues import GitHubIssueSource, IssueSourceProtocol, SimulatedIssueSource
 from app.main import create_app
 from app.models import GitHubIssue, TaskStatus
 from app.orchestrator import Orchestrator
@@ -289,4 +290,67 @@ def test_metrics_endpoint_includes_observability(client: TestClient) -> None:
     ):
         assert key in body
     assert body["scans_completed"] >= 1
+
+
+def test_poll_run_requires_token_when_configured() -> None:
+    settings = Settings(
+        simulation_mode=True,
+        database_path=":memory:",
+        issue_polling_enabled=False,
+        poll_api_token="s3cret",
+    )
+    with TestClient(create_app(settings)) as c:
+        assert c.post("/poll/run").status_code == 401
+        assert c.post("/poll/run", headers={"X-Auth-Token": "wrong"}).status_code == 401
+        ok = c.post("/poll/run", headers={"X-Auth-Token": "s3cret"})
+        assert ok.status_code == 200
+        # /simulate/issue is protected by the same token.
+        assert c.post("/simulate/issue").status_code == 401
+        assert (
+            c.post("/simulate/issue", headers={"X-Auth-Token": "s3cret"}).status_code
+            == 200
+        )
+
+
+def test_github_source_follows_pagination() -> None:
+    page2 = (
+        "https://api.github.com/repos/o/r/issues?state=open&per_page=100&page=2"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("page") == "2":
+            return httpx.Response(
+                200,
+                json=[{"number": 3, "title": "c", "html_url": "u3", "labels": []}],
+            )
+        body = [
+            {
+                "number": 1,
+                "title": "a",
+                "html_url": "u1",
+                "labels": [{"name": "security"}],
+            },
+            # A pull request masquerading as an issue — must be skipped.
+            {
+                "number": 2,
+                "title": "pr",
+                "html_url": "u2",
+                "labels": [],
+                "pull_request": {"url": "x"},
+            },
+        ]
+        return httpx.Response(
+            200, json=body, headers={"Link": f'<{page2}>; rel="next"'}
+        )
+
+    mock = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.github.com",
+    )
+    source = GitHubIssueSource(Settings(github_repo="o/r"), client=mock)
+    issues = asyncio.run(source.list_open_issues())
+    asyncio.run(source.aclose())
+
+    # PR (#2) skipped; page 2 (#3) followed via Link: rel="next".
+    assert [i.number for i in issues] == [1, 3]
 
