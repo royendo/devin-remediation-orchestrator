@@ -65,11 +65,9 @@ for the same issue.
 Besides the interval, you can force an immediate scan two ways:
 
 - **HTTP:** `curl -X POST http://localhost:8000/poll/run` — returns a JSON
-  summary (`scanned`, `eligible`, `triggered`, `duplicate`, `errors`).
+  summary (`scanned`, `eligible`, `triggered`, `duplicate`, `ignored`, `errors`).
 - **Keyboard:** when the server runs attached to a terminal, press **`s`** to
   scan now (Ctrl-C to quit). Disabled automatically when stdin is not a TTY.
-
-![Dashboard](docs/dashboard.png)
 
 ## Companion repository
 
@@ -84,11 +82,12 @@ service.
 
 | Method | Path                | Description                                       |
 | ------ | ------------------- | ------------------------------------------------- |
-| POST   | `/poll/run`         | Manually trigger an immediate repository scan      |
-| POST   | `/simulate/issue`   | Inject a synthetic issue (simulation mode only)   |
-| GET    | `/metrics`          | JSON metrics                                      |
-| GET    | `/dashboard`        | HTML dashboard (auto-refreshing)                  |
-| GET    | `/health`           | Liveness + mode + monitored repo                  |
+| POST   | `/poll/run`           | Manually trigger an immediate repository scan      |
+| POST   | `/simulate/issue`     | Inject a synthetic issue (simulation mode only)   |
+| GET    | `/metrics`            | JSON metrics (task state, outcomes, throughput, scan funnel) |
+| GET    | `/metrics/prometheus` | Same metrics in Prometheus text format (scrape into Grafana/Datadog) |
+| GET    | `/dashboard`          | HTML dashboard (auto-refreshing)                  |
+| GET    | `/health`             | Liveness + mode + monitored repo                  |
 
 ## Task state (SQLite)
 
@@ -96,6 +95,39 @@ Each task row stores: issue URL, issue number, repo, Devin session ID, Devin
 session URL, status (`pending`/`running`/`completed`/`failed`), `created_at`,
 `updated_at`, `completed_at`, PR URL (when available), and an error message on
 failure.
+
+## Observability — "how would I know this is working?"
+
+Three layers answer that question without any external tooling:
+
+1. **HTML dashboard** (`/dashboard`, auto-refresh): a liveness strip (mode,
+   scans run, last/next scan, uptime), headline cards (detected, triggered,
+   active, completed, failed, PRs, success rate, throughput/hr, avg & median
+   time-to-PR), a **scan funnel** (detected → eligible → triggered → ignored →
+   deduped), a **failure-reasons** panel, and the per-task table with status
+   badges and session/PR links.
+2. **Metrics endpoints** — `/metrics` (JSON) and `/metrics/prometheus`
+   (Prometheus text, scrape straight into Grafana/Datadog for org-wide
+   dashboards and alerts).
+3. **Structured logs** — every scan emits one greppable line:
+   `scan complete scanned=… eligible=… triggered=… duplicate=… ignored=… errors=…`,
+   plus per-session start/reconcile lines, for log-based monitoring.
+
+What each signal tells a leader:
+
+| Question                              | Signal                                              |
+| ------------------------------------- | --------------------------------------------------- |
+| Is the monitor alive and polling?     | `last_scan_at`, `next_scan_in_seconds`, `scans_completed`, `uptime_seconds` |
+| Is it acting on the right issues?     | scan funnel: `issues_detected_total` → `triggered_total` / `ignored_total` / `duplicate_total` |
+| Are remediations succeeding?          | `success_rate`, `completed_sessions` vs `failed_sessions` |
+| When they fail, why?                  | `failure_reasons` (grouped error messages)          |
+| How fast / how much work flows?       | `throughput_per_hour`, `average_/median_completion_seconds` |
+
+> Task metrics (completed/failed/PRs) are persisted in SQLite and survive
+> restarts; the scan-funnel/liveness counters are in-memory and reset on
+> restart.
+
+![Dashboard](docs/dashboard.png)
 
 ## Environment variables
 

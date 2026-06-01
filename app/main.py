@@ -24,7 +24,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 
 from app import simulation
 from app.config import Settings, get_settings
@@ -35,6 +40,7 @@ from app.issues import build_issue_source
 from app.keyboard import KeyboardTrigger
 from app.orchestrator import IssueOutcome, Orchestrator, ScanResult
 from app.poller import IssuePoller, PollingWorker
+from app.prometheus import render_prometheus
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,6 +73,7 @@ def _scan_response(result: ScanResult) -> JSONResponse:
             "eligible": result.eligible,
             "triggered": result.triggered,
             "duplicate": result.duplicate,
+            "ignored": result.ignored,
             "errors": result.errors,
             "triggered_tasks": [t.model_dump() for t in result.triggered_tasks],
         }
@@ -124,6 +131,13 @@ async def simulate_issue(request: Request) -> JSONResponse:
 @router.get("/metrics")
 async def metrics(request: Request) -> JSONResponse:
     return JSONResponse(_orchestrator(request).metrics().model_dump())
+
+
+@router.get("/metrics/prometheus", response_class=PlainTextResponse)
+async def metrics_prometheus(request: Request) -> PlainTextResponse:
+    """Expose metrics in Prometheus text format for scraping into Grafana etc."""
+    body = render_prometheus(_orchestrator(request).metrics())
+    return PlainTextResponse(body, media_type="text/plain; version=0.0.4")
 
 
 @router.get("/dashboard", response_class=HTMLResponse)

@@ -32,6 +32,7 @@ from app.issues import IssueSourceProtocol, SimulatedIssueSource
 from app.main import create_app
 from app.models import GitHubIssue, TaskStatus
 from app.orchestrator import Orchestrator
+from app.prometheus import render_prometheus
 
 
 class _StaticIssueSource:
@@ -87,11 +88,62 @@ def test_scan_open_issues_triggers_and_dedupes() -> None:
     assert first.triggered == 2
     assert len(first.triggered_tasks) == 2
 
+    assert first.ignored == 1  # the "question" issue has no trigger label
+
     # A second scan over the same issues must not start new sessions.
     second = asyncio.run(orch.scan_open_issues(source))
     assert second.triggered == 0
     assert second.duplicate == 2
     assert len(orch.store.list_tasks()) == 2
+
+    # Runtime telemetry accumulates across both scans.
+    stats = orch.stats
+    assert stats.scans_completed == 2
+    assert stats.issues_detected_total == 6
+    assert stats.triggered_total == 2
+    assert stats.ignored_total == 2
+    assert stats.duplicate_total == 2
+    assert stats.last_scan_at is not None
+
+
+def test_metrics_expose_observability_fields() -> None:
+    orch = _orchestrator(duration=0.0)
+    source = _StaticIssueSource(
+        [_issue(["security"], number=1), _issue(["question"], number=2)]
+    )
+    asyncio.run(orch.scan_open_issues(source))
+    asyncio.run(orch.refresh_active())  # completes the triggered session
+
+    m = orch.metrics()
+    assert m.completed_sessions == 1
+    assert m.median_completion_seconds is not None
+    assert m.throughput_per_hour > 0
+    assert m.scans_completed == 1
+    assert m.issues_detected_total == 2
+    assert m.triggered_total == 1
+    assert m.ignored_total == 1
+    assert m.last_scan_at is not None
+    # Timer polling is on by default, so a countdown is reported.
+    assert m.next_scan_in_seconds is not None
+
+
+def test_metrics_group_failure_reasons() -> None:
+    settings = Settings(simulation_mode=True, database_path=":memory:")
+    store = TaskStore(":memory:")
+    client = SimulatedDevinClient(duration=0.0, failure_rate=1.0)
+    orch = Orchestrator(settings, store, client)
+
+    asyncio.run(orch.process_issue(_issue(["security"], number=1)))
+    asyncio.run(orch.process_issue(_issue(["security"], number=2)))
+    asyncio.run(orch.refresh_active())
+
+    m = orch.metrics()
+    assert m.failed_sessions == 2
+    assert sum(m.failure_reasons.values()) == 2
+
+    text = render_prometheus(m)
+    assert "orchestrator_tasks_failed 2" in text
+    assert "orchestrator_failures_by_reason" in text
 
 
 def test_simulated_issue_source_returns_eligible_issues() -> None:
@@ -184,3 +236,31 @@ def test_health_reports_monitored_repo(client: TestClient) -> None:
     body = client.get("/health").json()
     assert body["status"] == "ok"
     assert "monitored_repo" in body
+
+
+def test_metrics_endpoint_includes_observability(client: TestClient) -> None:
+    client.post("/poll/run")
+    body = client.get("/metrics").json()
+    for key in (
+        "scans_completed",
+        "issues_detected_total",
+        "triggered_total",
+        "ignored_total",
+        "throughput_per_hour",
+        "median_completion_seconds",
+        "failure_reasons",
+        "monitored_repo",
+    ):
+        assert key in body
+    assert body["scans_completed"] >= 1
+
+
+def test_prometheus_endpoint(client: TestClient) -> None:
+    client.post("/poll/run")
+    resp = client.get("/metrics/prometheus")
+    assert resp.status_code == 200
+    assert "text/plain" in resp.headers["content-type"]
+    text = resp.text
+    assert "# TYPE orchestrator_tasks_total gauge" in text
+    assert "orchestrator_scans_completed_total" in text
+    assert "orchestrator_issues_triggered_total" in text
