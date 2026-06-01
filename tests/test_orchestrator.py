@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from app import github
 from app.config import Settings
 from app.db import TaskStore
-from app.devin_client import SimulatedDevinClient
+from app.devin_client import SessionResult, SimulatedDevinClient
 from app.issues import IssueSourceProtocol, SimulatedIssueSource
 from app.main import create_app
 from app.models import GitHubIssue, TaskStatus
@@ -95,13 +95,15 @@ def test_scan_open_issues_triggers_and_dedupes() -> None:
     assert second.duplicate == 2
     assert len(orch.store.list_tasks()) == 2
 
-    # Runtime telemetry accumulates across both scans.
+    # Runtime telemetry: funnel counts UNIQUE issues (not re-counted per scan),
+    # while duplicate is a cumulative re-scan-skip signal.
     stats = orch.stats
     assert stats.scans_completed == 2
-    assert stats.issues_detected_total == 6
+    assert stats.issues_detected_total == 3  # 3 distinct issues across 2 scans
+    assert stats.eligible_total == 2
     assert stats.triggered_total == 2
-    assert stats.ignored_total == 2
-    assert stats.duplicate_total == 2
+    assert stats.ignored_total == 1  # the single "question" issue, counted once
+    assert stats.duplicate_total == 2  # 2 eligible issues re-skipped on scan 2
     assert stats.last_scan_at is not None
 
 
@@ -194,6 +196,45 @@ def test_poller_marks_failed() -> None:
     assert task.status == TaskStatus.FAILED
     assert task.error is not None
     assert orch.metrics().failed_sessions == 1
+
+
+class _MergedPRClient:
+    """Stub client whose session stays ``running`` but exposes a merged PR."""
+
+    async def create_session(self, prompt: str) -> SessionResult:
+        return SessionResult("sid", "https://app.devin.ai/sessions/sid", "running")
+
+    async def get_session(self, session_id: str) -> SessionResult:
+        return SessionResult(
+            session_id,
+            "https://app.devin.ai/sessions/sid",
+            "running",
+            pr_url="https://github.com/o/r/pull/9",
+            pr_state="merged",
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_merged_pr_completes_running_session() -> None:
+    settings = Settings(simulation_mode=True, database_path=":memory:")
+    store = TaskStore(":memory:")
+    orch = Orchestrator(settings, store, _MergedPRClient())
+
+    asyncio.run(orch.process_issue(_issue(["security"])))
+    asyncio.run(orch.refresh_active())
+
+    task = store.list_tasks()[0]
+    # Session is still "running" but its PR merged → task is COMPLETED.
+    assert task.status == TaskStatus.COMPLETED
+    assert task.pr_url == "https://github.com/o/r/pull/9"
+    assert task.completed_at is not None
+
+    m = orch.metrics()
+    assert m.completed_sessions == 1
+    assert m.prs_created == 1
+    assert m.success_rate == 1.0
 
 
 @pytest.fixture

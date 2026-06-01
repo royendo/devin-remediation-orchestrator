@@ -66,6 +66,11 @@ class ScanResult:
     ignored: int = 0
     errors: int = 0
     triggered_tasks: list[Task] = field(default_factory=list)
+    # Unique issue keys (``repo#number``) seen in this scan, by funnel stage.
+    detected_keys: set[str] = field(default_factory=set)
+    eligible_keys: set[str] = field(default_factory=set)
+    ignored_keys: set[str] = field(default_factory=set)
+    triggered_keys: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -74,24 +79,46 @@ class RuntimeStats:
 
     These counters reset on restart (unlike the persisted task metrics); they
     exist to answer "is the monitor actually polling, and what is it seeing?".
+
+    The funnel (detected/eligible/triggered/ignored) is tracked as sets of
+    distinct issue keys so it reads as a funnel over *unique* issues rather
+    than re-counting the same issues on every scan. ``duplicate_total`` stays a
+    cumulative counter — it is a liveness signal showing how often re-scans
+    correctly skipped already-tracked issues.
     """
 
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     scans_completed: int = 0
-    issues_detected_total: int = 0
-    eligible_total: int = 0
-    triggered_total: int = 0
-    ignored_total: int = 0
     duplicate_total: int = 0
     error_total: int = 0
     last_scan_at: str | None = None
+    detected_keys: set[str] = field(default_factory=set)
+    eligible_keys: set[str] = field(default_factory=set)
+    ignored_keys: set[str] = field(default_factory=set)
+    triggered_keys: set[str] = field(default_factory=set)
+
+    @property
+    def issues_detected_total(self) -> int:
+        return len(self.detected_keys)
+
+    @property
+    def eligible_total(self) -> int:
+        return len(self.eligible_keys)
+
+    @property
+    def ignored_total(self) -> int:
+        return len(self.ignored_keys)
+
+    @property
+    def triggered_total(self) -> int:
+        return len(self.triggered_keys)
 
     def record(self, result: ScanResult) -> None:
         self.scans_completed += 1
-        self.issues_detected_total += result.scanned
-        self.eligible_total += result.eligible
-        self.triggered_total += result.triggered
-        self.ignored_total += result.ignored
+        self.detected_keys |= result.detected_keys
+        self.eligible_keys |= result.eligible_keys
+        self.ignored_keys |= result.ignored_keys
+        self.triggered_keys |= result.triggered_keys
         self.duplicate_total += result.duplicate
         self.error_total += result.errors
         self.last_scan_at = utcnow()
@@ -139,13 +166,18 @@ class Orchestrator:
         result = ScanResult(scanned=len(issues))
         triggers = self._settings.trigger_label_set
         for issue in issues:
+            key = f"{issue.repo_full_name}#{issue.number}"
+            result.detected_keys.add(key)
             if not github.has_trigger_label(issue, triggers):
                 result.ignored += 1
+                result.ignored_keys.add(key)
                 continue
             result.eligible += 1
+            result.eligible_keys.add(key)
             outcome = await self._trigger(issue)
             if outcome.result == "triggered":
                 result.triggered += 1
+                result.triggered_keys.add(key)
                 if outcome.task is not None:
                     result.triggered_tasks.append(outcome.task)
             elif outcome.result == "duplicate":
@@ -229,7 +261,10 @@ class Orchestrator:
                 continue
 
             devin_status = session.status.lower()
-            if devin_status in DEVIN_TERMINAL_FAIL:
+            # A merged PR is the authoritative success signal: the remediation
+            # landed even if the Devin session itself is still running.
+            pr_merged = (session.pr_state or "").lower() == "merged"
+            if devin_status in DEVIN_TERMINAL_FAIL and not pr_merged:
                 self._store.update_task(
                     task.id,
                     status=TaskStatus.FAILED,
@@ -239,7 +274,7 @@ class Orchestrator:
                     completed_at=utcnow(),
                 )
                 updated += 1
-            elif devin_status in DEVIN_TERMINAL_OK:
+            elif pr_merged or devin_status in DEVIN_TERMINAL_OK:
                 self._store.update_task(
                     task.id,
                     status=TaskStatus.COMPLETED,

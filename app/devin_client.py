@@ -41,6 +41,7 @@ class SessionResult:
     session_url: str
     status: str
     pr_url: str | None = None
+    pr_state: str | None = None
     error: str | None = None
 
 
@@ -86,6 +87,27 @@ def _extract_pr_url(payload: dict[str, object]) -> str | None:
     return None
 
 
+def _extract_pr_state(payload: dict[str, object]) -> str | None:
+    """Best-effort extraction of the PR state (e.g. ``"merged"``) from a payload.
+
+    The v3 ``pull_requests`` array carries a ``pr_state`` per PR. A merged PR is
+    treated as the authoritative signal, so it wins over any other state.
+    """
+    pull_requests = payload.get("pull_requests")
+    if isinstance(pull_requests, list):
+        present: list[str] = []
+        for item in pull_requests:
+            if isinstance(item, dict):
+                state = item.get("pr_state")
+                if isinstance(state, str):
+                    present.append(state)
+        if "merged" in present:
+            return "merged"
+        if present:
+            return present[0]
+    return None
+
+
 class DevinClient:
     """Thin async wrapper over the Devin ``/v3`` sessions API."""
 
@@ -112,6 +134,7 @@ class DevinClient:
             ),
             status=str(data.get("status", "running")),
             pr_url=_extract_pr_url(data),
+            pr_state=_extract_pr_state(data),
         )
 
     async def get_session(self, session_id: str) -> SessionResult:
@@ -125,6 +148,7 @@ class DevinClient:
             session_url=data.get("url", f"https://app.devin.ai/sessions/{session_id}"),
             status=str(data.get("status", "running")),
             pr_url=_extract_pr_url(data),
+            pr_state=_extract_pr_state(data),
         )
 
     async def aclose(self) -> None:
